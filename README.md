@@ -73,6 +73,8 @@ Use a **GCC/g++** toolchain (needed for `bits/stdc++.h`):
 
 The only file that is guaranteed to work without `<bits/stdc++.h>` support is `bf1easy`. Otherwise, you may need to install a compiler with support for `<bits/stdc++.h>`.
 
+Install using brew or scoop, then it will prompt you to download the sample problems folder in your current folder.
+
 ## Maintainer: Publish a New Version
 
 1. Commit and push to `main`.

@@ -72,10 +72,9 @@ func runInitWizard(in io.Reader, out io.Writer, problemsDir string, force bool) 
 
 	if err := validateProblemsDir(problemsDir); err == nil {
 		fmt.Fprintf(out, "Problems directory: found at %s\n", problemsDir)
-		return nil
+	} else {
+		fmt.Fprintf(out, "Problems directory: %s is missing or incomplete.\n", problemsDir)
 	}
-
-	fmt.Fprintf(out, "Problems directory: %s is missing or incomplete.\n", problemsDir)
 	download, err := promptYesNo(reader, out, "Download the sample problems zip and extract it now? [Y/n]: ", true)
 	if err != nil {
 		return err

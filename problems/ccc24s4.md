@@ -1,3 +1,5 @@
+[Judge](https://dmoj.ca/problem/ccc24s4)
+
 # ccc24s4 
 
 Time: ~2 hours

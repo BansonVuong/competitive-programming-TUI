@@ -1,3 +1,5 @@
+[Judge](https://dmoj.ca/problem/ccc23s4)
+
 # ccc23s4
 8:15pm start
 ~2h

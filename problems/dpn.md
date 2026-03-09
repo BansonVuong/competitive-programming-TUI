@@ -1,3 +1,5 @@
+[Judge](https://dmoj.ca/problem/dpn)
+
 # dpn
 
 choose two adjacent slimes, then combine into new slime. 

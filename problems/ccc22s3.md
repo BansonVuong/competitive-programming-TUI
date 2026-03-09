@@ -1,3 +1,5 @@
+[Judge](https://dmoj.ca/problem/ccc22s3)
+
 # ccc22s3
 
 first instinct:

@@ -1,3 +1,5 @@
+[Judge](https://dmoj.ca/problem/ccc22s5)
+
 # ccc22s5
 
 ridiculous amount of time spent on this. almost a week.

@@ -1,3 +1,5 @@
+[Judge](https://dmoj.ca/problem/ccc16s3)
+
 # ccc16s3
 
 first read: graph theory

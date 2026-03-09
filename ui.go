@@ -235,7 +235,7 @@ func (m model) View() string {
 
 func (m model) renderList() string {
 	if len(m.problems) == 0 {
-		return titleStyle.Render("Competitive Programming Problems") + "\n\n" + errorStyle.Render("No problems found") + "\n\n" + footerStyle.Render("q: quit")
+		return titleStyle.Render("CPTUI") + "\n\n" + errorStyle.Render("No problems found") + "\n\n" + footerStyle.Render("q: quit")
 	}
 	visible, start := m.listRows(), m.listOffset
 	end := min(start+visible, len(m.problems))
@@ -247,7 +247,7 @@ func (m model) renderList() string {
 		}
 		lines = append(lines, line)
 	}
-	return titleStyle.Render("Competitive Programming Problems") + "\n\n" + strings.Join(lines, "\n") + "\n\n" + footerStyle.Render("enter: select | q: quit")
+	return titleStyle.Render("CPTUI") + "\n\n" + strings.Join(lines, "\n") + "\n\n" + footerStyle.Render("enter: select | q: quit")
 }
 
 func (m model) renderAction() string {

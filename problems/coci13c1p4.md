@@ -1,3 +1,5 @@
+[Judge](https://dmoj.ca/problem/coci13c1p4)
+
 # coci13c1p4
 
 first impression: dp? looks like knapsack dp.

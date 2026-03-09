@@ -1,3 +1,5 @@
+[Judge](https://dmoj.ca/problem/ccc19s3)
+
 # ccc19s3
 
 3x3 grid

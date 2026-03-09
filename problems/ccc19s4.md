@@ -1,3 +1,5 @@
+[Judge](https://dmoj.ca/problem/ccc19s4)
+
 # CCC 19 S4
 
 first instinct - maximizing and minimizing, dp?

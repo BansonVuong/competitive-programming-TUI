@@ -1,3 +1,5 @@
+[Judge](https://dmoj.ca/problem/ccc22s4)
+
 # ccc22s4
 naive: brute force all 3 combinations (probably probably works for subtask 1 (n<=200))
 how to do the geometry to figure out what point is in the middle? i have no clue

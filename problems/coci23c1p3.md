@@ -1,3 +1,5 @@
+[Judge](https://dmoj.ca/problem/coci23c1p3)
+
 # coci23c1p3
 
 first instinct (naive approach): run a loop across every possible table, every possible position

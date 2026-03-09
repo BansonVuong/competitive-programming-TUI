@@ -1,3 +1,5 @@
+[Judge](https://dmoj.ca/problem/ccc24s3)
+
 # CCC24S3
 
 swipe left, swipe right

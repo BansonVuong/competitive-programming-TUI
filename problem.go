@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -87,16 +88,13 @@ func extractJudgeURL(mdPath string) string {
 		return ""
 	}
 
+	judgeLinkPattern := regexp.MustCompile(`(?i)\[judge\]\(([^)]+)\)`)
+
 	for _, line := range strings.Split(string(data), "\n") {
-		start := strings.Index(line, "](")
-		if start == -1 {
-			continue
+		matches := judgeLinkPattern.FindStringSubmatch(line)
+		if len(matches) == 2 {
+			return strings.TrimSpace(matches[1])
 		}
-		end := strings.Index(line[start+2:], ")")
-		if end == -1 {
-			continue
-		}
-		return strings.TrimSpace(line[start+2 : start+2+end])
 	}
 
 	return ""

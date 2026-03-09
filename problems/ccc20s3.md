@@ -1,3 +1,5 @@
+[Judge](https://dmoj.ca/problem/ccc20s3)
+
 # ccc20s3 
 
 okay first glance.. a distinct permutation of N is just a window of length N with the same frequency count as N

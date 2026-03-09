@@ -1,14 +1,25 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 func main() {
-	problemsDir := "./problems"
+	problemsDirFlag := flag.String("problems-dir", "./problems", "directory containing .cpp/.md/.in/.out problem files")
+	flag.Parse()
+
+	problemsDir := filepath.Clean(*problemsDirFlag)
+	if err := validateProblemsDir(problemsDir); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid problems directory %q: %v\n", problemsDir, err)
+		os.Exit(1)
+	}
+
 	problems, err := DiscoverProblems(problemsDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to discover problems in %q: %v\n", problemsDir, err)
@@ -20,4 +31,29 @@ func main() {
 		fmt.Fprintf(os.Stderr, "application error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func validateProblemsDir(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("path is not a directory")
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if strings.HasSuffix(strings.ToLower(entry.Name()), ".cpp") {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("no .cpp files found")
 }

@@ -38,6 +38,12 @@ Run from a directory that contains `./problems`.
 .\cptui.exe
 ```
 
+Use a custom problems directory:
+
+```bash
+./cptui --problems-dir /path/to/problems
+```
+
 **A C++ compiler is required to run this program.**
 
 Use a **GCC/g++** toolchain (needed for `bits/stdc++.h`):

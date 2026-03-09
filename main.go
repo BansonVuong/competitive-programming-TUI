@@ -12,11 +12,17 @@ import (
 
 func main() {
 	problemsDirFlag := flag.String("problems-dir", "./problems", "directory containing .cpp/.md/.in/.out problem files")
+	initFlag := flag.Bool("init", false, "run first-time setup")
 	flag.Parse()
 
 	problemsDir := filepath.Clean(*problemsDirFlag)
+	if err := maybeRunInit(problemsDir, *initFlag); err != nil {
+		fmt.Fprintf(os.Stderr, "initialization failed: %v\n", err)
+		os.Exit(1)
+	}
 	if err := validateProblemsDir(problemsDir); err != nil {
 		fmt.Fprintf(os.Stderr, "invalid problems directory %q: %v\n", problemsDir, err)
+		fmt.Fprintf(os.Stderr, "Run `cptui --init` or specify `--problems-dir`.\n")
 		os.Exit(1)
 	}
 

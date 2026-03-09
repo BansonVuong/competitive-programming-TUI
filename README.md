@@ -25,6 +25,18 @@ Package managers (when configured):
 
 Run from a directory that contains `./problems`, or specify `--problems-dir`.
 
+On the first ever run, CPTUI launches a setup flow that:
+
+- checks for a compatible C++ compiler with `bits/stdc++.h` support
+- prints install guidance if no compatible compiler is found
+- offers to download and extract the sample `problems` archive automatically
+
+You can trigger the setup again manually:
+
+```bash
+./cptui --init
+```
+
 ### macOS
 
 ```bash

@@ -3,57 +3,101 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 )
 
-type Problem struct {
-	ProblemCode string
-	CodePath    string
-	DevlogPath  string
-	JudgeLink   string
+type TestCase struct {
+	InputPath  string
+	OutputPath string
 }
 
-func LoadProblems(dir string) ([]Problem, error) {
+type Problem struct {
+	Name       string
+	CodePath   string
+	DevlogPath string
+	JudgeURL   string
+	TestCases  []TestCase
+}
+
+func DiscoverProblems(dir string) ([]Problem, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
-	judgeLinkRe := regexp.MustCompile(`\[Judge\]\(([^)]+)\)`)
 
-	problems := make([]Problem, 0)
+	found := make(map[string]*Problem)
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
 
 		name := entry.Name()
-		if filepath.Ext(name) != ".cpp" {
-			continue
-		}
+		fullPath := filepath.Join(dir, name)
 
-		base := strings.TrimSuffix(name, ".cpp")
-		devlogPath := filepath.Join(dir, base+".md")
-		judgeLink := ""
-		if content, readErr := os.ReadFile(devlogPath); readErr == nil {
-			match := judgeLinkRe.FindStringSubmatch(string(content))
-			if len(match) >= 2 {
-				judgeLink = strings.TrimSpace(match[1])
+		switch {
+		case strings.HasSuffix(name, ".cpp"):
+			key := strings.TrimSuffix(name, ".cpp")
+			p := getOrCreateProblem(found, key)
+			p.CodePath = fullPath
+		case strings.HasSuffix(name, ".md"):
+			key := strings.TrimSuffix(name, ".md")
+			p := getOrCreateProblem(found, key)
+			p.DevlogPath = fullPath
+			p.JudgeURL = extractJudgeURL(fullPath)
+		case strings.HasSuffix(name, ".in"):
+			parts := strings.Split(name, ".")
+			if len(parts) != 3 || parts[2] != "in" {
+				continue
 			}
+			key := parts[0]
+			p := getOrCreateProblem(found, key)
+			p.TestCases = append(p.TestCases, TestCase{
+				InputPath:  fullPath,
+				OutputPath: filepath.Join(dir, parts[0]+"."+parts[1]+".out"),
+			})
 		}
+	}
 
-		problems = append(problems, Problem{
-			ProblemCode: base,
-			CodePath:    filepath.Join(dir, base+".cpp"),
-			DevlogPath:  devlogPath,
-			JudgeLink:   judgeLink,
+	problems := make([]Problem, 0, len(found))
+	for _, p := range found {
+		sort.Slice(p.TestCases, func(i, j int) bool {
+			return p.TestCases[i].InputPath < p.TestCases[j].InputPath
 		})
+		problems = append(problems, *p)
 	}
 
 	sort.Slice(problems, func(i, j int) bool {
-		return strings.ToLower(problems[i].ProblemCode) < strings.ToLower(problems[j].ProblemCode)
+		return strings.ToLower(problems[i].Name) < strings.ToLower(problems[j].Name)
 	})
 
 	return problems, nil
+}
+
+func getOrCreateProblem(m map[string]*Problem, key string) *Problem {
+	if m[key] == nil {
+		m[key] = &Problem{Name: key}
+	}
+	return m[key]
+}
+
+func extractJudgeURL(mdPath string) string {
+	data, err := os.ReadFile(mdPath)
+	if err != nil {
+		return ""
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		start := strings.Index(line, "](")
+		if start == -1 {
+			continue
+		}
+		end := strings.Index(line[start+2:], ")")
+		if end == -1 {
+			continue
+		}
+		return strings.TrimSpace(line[start+2 : start+2+end])
+	}
+
+	return ""
 }

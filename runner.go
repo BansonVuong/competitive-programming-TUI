@@ -10,187 +10,222 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
 
-type PresetTestCase struct {
-	Index   int
-	InPath  string
-	OutPath string
+type TestResult struct {
+	InputFile string
+	Input     string
+	Expected  string
+	Got       string
+	Passed    bool
 }
 
-type TestRunResult struct {
-	ProblemName string
-	Summary     string
-	Err         error
-}
+const bitsCompilerHint = "Install a compiler with <bits/stdc++.h> support (typically GCC g++)."
 
-func RunPresetTestCases(problem Problem) TestRunResult {
-	tests, err := FindPresetTestCases(problem)
-	if err != nil {
-		return TestRunResult{ProblemName: problem.ProblemCode, Err: err}
-	}
-	if len(tests) == 0 {
-		return TestRunResult{ProblemName: problem.ProblemCode, Err: fmt.Errorf("no preset test cases found")}
+func RunTestCases(problem Problem) []TestResult {
+	if problem.CodePath == "" {
+		return []TestResult{{Got: "missing code file"}}
 	}
 
 	exePath, cleanup, err := compileCPP(problem.CodePath)
 	if err != nil {
-		return TestRunResult{ProblemName: problem.ProblemCode, Err: err}
+		return []TestResult{{InputFile: "compile", Got: err.Error()}}
 	}
 	defer cleanup()
 
-	return runPresetTestCasesWithExe(problem, tests, exePath)
-}
-
-func RunPresetTestCasesWithExe(problem Problem, exePath string) TestRunResult {
-	tests, err := FindPresetTestCases(problem)
-	if err != nil {
-		return TestRunResult{ProblemName: problem.ProblemCode, Err: err}
-	}
-	if len(tests) == 0 {
-		return TestRunResult{ProblemName: problem.ProblemCode, Err: fmt.Errorf("no preset test cases found")}
+	if len(problem.TestCases) == 0 {
+		return []TestResult{{Got: "no test cases found"}}
 	}
 
-	return runPresetTestCasesWithExe(problem, tests, exePath)
-}
-
-func runPresetTestCasesWithExe(problem Problem, tests []PresetTestCase, exePath string) TestRunResult {
-
-	var b strings.Builder
-	passed := 0
-	for _, tc := range tests {
-		testName := fmt.Sprintf("%s.%d.in", problem.ProblemCode, tc.Index)
-		ok, expectedOut, gotOut, runErr := runSingleTest(exePath, tc)
-		if runErr != nil {
-			fmt.Fprintf(&b, "✗ %s\n  error: %v\n", testName, runErr)
-			continue
-		}
-		if ok {
-			passed++
-			fmt.Fprintf(&b, "✓ %s\n", testName)
-		} else {
-			fmt.Fprintf(&b, "✗ %s\n", testName)
-			expLines := strings.Split(strings.TrimRight(expectedOut, "\n"), "\n")
-			gotLines := strings.Split(strings.TrimRight(gotOut, "\n"), "\n")
-			fmt.Fprintf(&b, "expected: %s\n", expLines[0])
-			for _, line := range expLines[1:] {
-				fmt.Fprintf(&b, "          %s\n", line)
+	results := make([]TestResult, 0, len(problem.TestCases))
+	for _, tc := range problem.TestCases {
+		input, inErr := os.ReadFile(tc.InputPath)
+		expected, outErr := os.ReadFile(tc.OutputPath)
+		name := filepath.Base(tc.InputPath)
+		switch {
+		case inErr != nil:
+			results = append(results, TestResult{InputFile: name, Got: "could not read input file"})
+		case outErr != nil:
+			results = append(results, TestResult{
+				InputFile: name,
+				Input:     strings.TrimRight(string(input), "\r\n"),
+				Got:       "could not read output file",
+			})
+		default:
+			got, runErr := runBinaryWithInput(exePath, string(input), 4*time.Second)
+			inputText := strings.TrimRight(string(input), "\r\n")
+			expectedText := strings.TrimRight(string(expected), "\r\n")
+			if runErr != nil {
+				results = append(results, TestResult{
+					InputFile: name,
+					Input:     inputText,
+					Expected:  expectedText,
+					Got:       runErr.Error(),
+				})
+				continue
 			}
-			fmt.Fprintf(&b, "     got: %s\n", gotLines[0])
-			for _, line := range gotLines[1:] {
-				fmt.Fprintf(&b, "          %s\n", line)
-			}
+			gotText := strings.TrimRight(got, "\r\n")
+			results = append(results, TestResult{
+				InputFile: name,
+				Input:     inputText,
+				Expected:  expectedText,
+				Got:       gotText,
+				Passed:    normalizeOutput(gotText) == normalizeOutput(expectedText),
+			})
 		}
 	}
-
-	fmt.Fprintf(&b, "\nPassed %d/%d", passed, len(tests))
-	return TestRunResult{ProblemName: problem.ProblemCode, Summary: b.String()}
+	return results
 }
 
-func FindPresetTestCases(problem Problem) ([]PresetTestCase, error) {
-	dir := filepath.Dir(problem.CodePath)
-	pattern := fmt.Sprintf("%s.*.in", problem.ProblemCode)
-	inFiles, err := filepath.Glob(filepath.Join(dir, pattern))
+func RunCustomInput(problem Problem, input string) (string, error) {
+	if problem.CodePath == "" {
+		return "", fmt.Errorf("missing code file")
+	}
+	exePath, cleanup, err := compileCPP(problem.CodePath)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-
-	re := regexp.MustCompile(regexp.QuoteMeta(problem.ProblemCode) + `\.(\d+)\.in$`)
-	cases := make([]PresetTestCase, 0)
-	for _, inFile := range inFiles {
-		name := filepath.Base(inFile)
-		m := re.FindStringSubmatch(name)
-		if len(m) < 2 {
-			continue
-		}
-
-		idx, convErr := strconv.Atoi(m[1])
-		if convErr != nil {
-			continue
-		}
-
-		outPath := filepath.Join(dir, fmt.Sprintf("%s.%d.out", problem.ProblemCode, idx))
-		if _, statErr := os.Stat(outPath); statErr != nil {
-			continue
-		}
-
-		cases = append(cases, PresetTestCase{Index: idx, InPath: inFile, OutPath: outPath})
+	defer cleanup()
+	out, err := runBinaryWithInput(exePath, input, 4*time.Second)
+	if err != nil {
+		return "", err
 	}
-
-	sort.Slice(cases, func(i, j int) bool {
-		return cases[i].Index < cases[j].Index
-	})
-	return cases, nil
+	return strings.TrimRight(out, "\r\n"), nil
 }
 
 func compileCPP(sourcePath string) (string, func(), error) {
-	return compileCPPContext(context.Background(), sourcePath)
-}
-
-func compileCPPContext(ctx context.Context, sourcePath string) (string, func(), error) {
 	tempDir, err := os.MkdirTemp("", "cp-tui-*")
 	if err != nil {
 		return "", func() {}, err
 	}
-
 	exeName := "solution"
 	if runtime.GOOS == "windows" {
 		exeName += ".exe"
 	}
 	exePath := filepath.Join(tempDir, exeName)
+	cleanup := func() { _ = os.RemoveAll(tempDir) }
 
-	cmd := exec.CommandContext(ctx, "g++", sourcePath, "-std=c++17", "-O2", "-o", exePath)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		cleanup := func() { _ = os.RemoveAll(tempDir) }
-		if ctx.Err() == context.Canceled {
-			return "", cleanup, fmt.Errorf("compile canceled")
-		}
-		return "", cleanup, fmt.Errorf("compile failed: %v\n%s", err, strings.TrimSpace(string(output)))
+	compilers := uniqueStrings(append(FindVersionedGPP(), FindCompilers()...))
+	if len(compilers) == 0 {
+		return "", cleanup, fmt.Errorf("compile failed:\nno C++ compiler found in PATH\n%s", bitsCompilerHint)
 	}
 
-	cleanup := func() { _ = os.RemoveAll(tempDir) }
-	return exePath, cleanup, nil
+	lastOutput := ""
+	allBitsMissing := true
+	for _, compiler := range compilers {
+		cmd := exec.Command(compiler, sourcePath, "-std=c++17", "-O2", "-o", exePath)
+		output, runErr := cmd.CombinedOutput()
+		if runErr == nil {
+			return exePath, cleanup, nil
+		}
+		lastOutput = strings.TrimSpace(string(output))
+		if isBitsStdCppMissing(lastOutput) {
+			continue
+		}
+		allBitsMissing = false
+		return "", cleanup, fmt.Errorf("compile failed:\n%s", lastOutput)
+	}
+
+	if allBitsMissing {
+		if lastOutput == "" {
+			lastOutput = "<bits/stdc++.h> not found"
+		}
+		return "", cleanup, fmt.Errorf("compile failed:\n%s\n%s", lastOutput, bitsCompilerHint)
+	}
+	if lastOutput == "" {
+		lastOutput = "unknown compile error"
+	}
+	return "", cleanup, fmt.Errorf("compile failed:\n%s", lastOutput)
 }
 
-func runSingleTest(exePath string, tc PresetTestCase) (bool, string, string, error) {
-	inData, err := os.ReadFile(tc.InPath)
-	if err != nil {
-		return false, "", "", err
+func FindVersionedGPP() []string {
+	pathEnv := os.Getenv("PATH")
+	if strings.TrimSpace(pathEnv) == "" {
+		return nil
 	}
-	expected, err := os.ReadFile(tc.OutPath)
-	if err != nil {
-		return false, "", "", err
+	re := regexp.MustCompile(`(^|-)g\+\+-\d+(\.\d+)*$`)
+	seen, found := map[string]bool{}, []string{}
+	for _, dir := range filepath.SplitList(pathEnv) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if !re.MatchString(name) {
+				continue
+			}
+			fullPath := filepath.Join(dir, name)
+			if seen[fullPath] || !isExecutable(fullPath) {
+				continue
+			}
+			seen[fullPath] = true
+			found = append(found, fullPath)
+		}
 	}
+	sort.Slice(found, func(i, j int) bool { return filepath.Base(found[i]) > filepath.Base(found[j]) })
+	return found
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+func FindCompilers() []string {
+	candidates, found := []string{"g++", "clang++", "c++", "clang", "cc"}, []string{}
+	for _, c := range candidates {
+		if p, err := exec.LookPath(c); err == nil {
+			found = append(found, p)
+		}
+	}
+	return uniqueStrings(found)
+}
+
+func isBitsStdCppMissing(output string) bool {
+	lower := strings.ToLower(output)
+	if !strings.Contains(lower, "bits/stdc++.h") {
+		return false
+	}
+	return strings.Contains(lower, "no such file or directory") || strings.Contains(lower, "file not found") || strings.Contains(lower, "cannot find")
+}
+
+func isExecutable(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	return info.Mode()&0o111 != 0
+}
+
+func uniqueStrings(items []string) []string {
+	seen, out := map[string]bool{}, make([]string, 0, len(items))
+	for _, item := range items {
+		if item == "" || seen[item] {
+			continue
+		}
+		seen[item] = true
+		out = append(out, item)
+	}
+	return out
+}
+
+func runBinaryWithInput(exePath, input string, timeout time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-
 	cmd := exec.CommandContext(ctx, exePath)
-	cmd.Stdin = bytes.NewReader(inData)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err = cmd.Run()
+	cmd.Stdin = strings.NewReader(input)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
-		return false, "", "", fmt.Errorf("time limit exceeded")
+		return "", fmt.Errorf("time limit exceeded (%s)", timeout)
 	}
 	if err != nil {
-		return false, "", "", fmt.Errorf("runtime error: %v %s", err, strings.TrimSpace(stderr.String()))
+		stderrText := strings.TrimSpace(stderr.String())
+		if stderrText == "" {
+			return "", fmt.Errorf("runtime error: %v", err)
+		}
+		return "", fmt.Errorf("runtime error: %v\n%s", err, stderrText)
 	}
-
-	actualNorm := normalizeOutput(stdout.String())
-	expectedNorm := normalizeOutput(string(expected))
-	if actualNorm == expectedNorm {
-		return true, "", "", nil
-	}
-
-	return false, strings.TrimRight(string(expected), "\r\n"), strings.TrimRight(stdout.String(), "\r\n"), nil
+	return stdout.String(), nil
 }
 
 func normalizeOutput(s string) string {

@@ -8,9 +8,9 @@ import (
 )
 
 func main() {
-	problems, err := LoadProblems("./problems")
+	problems, err := DiscoverProblems("./problems")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to load problems: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to discover problems: %v\n", err)
 		os.Exit(1)
 	}
 

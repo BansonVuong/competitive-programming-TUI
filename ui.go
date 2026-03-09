@@ -1,687 +1,357 @@
 package main
 
 import (
-	"context"
-	"io"
+	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
-	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/mattn/go-runewidth"
 )
 
-type screen int
-
 const (
-	screenMain screen = iota
-	screenProblem
+	screenList = iota
+	screenAction
 	screenView
 	screenToast
-	screenCompiling
-	screenCustom
+	screenCustomInput
+	screenRunning
 )
 
-type compileTarget int
-
-const (
-	compilePreset compileTarget = iota
-	compileCustom
-)
-
-const (
-	optionOpenCode          = "Open code"
-	optionOpenDevlog        = "Open devlog"
-	optionOpenJudge         = "Open judge"
-	optionRunPresetTestCase = "Run preset test cases"
-	optionRunCustomTestCase = "Run custom test cases"
-)
-
-var problemOptions = []string{
-	optionOpenCode,
-	optionOpenDevlog,
-	optionOpenJudge,
-	optionRunPresetTestCase,
-	optionRunCustomTestCase,
-}
+var actions = []string{"Show devlog", "Show code", "Open judge", "Run sample inputs", "Run custom input"}
 
 type model struct {
 	problems []Problem
-	screen   screen
+	cursor   int
+	screen   int
 
-	cursor       int
-	offset       int
-	optionCursor int
+	selected *Problem
+	action   int
+	output   string
+	customIn string
 
-	selected   Problem
-	width      int
-	height     int
-	viewLine   int
-	output     string
+	width, height int
+	listOffset    int
+	viewLine      int
+
 	toastText  string
 	toastIsErr bool
-	toastBack  screen
 	toastID    int
 
-	compileCancel context.CancelFunc
-	compileBack   screen
-	compileJobID  int
+	runningJobID int
+	prevScreen   int
 
-	// Custom interactive run
-	customCmd       *exec.Cmd
-	customStdin     io.WriteCloser
-	customOutputCh  <-chan string
-	customCleanup   func()
-	customInputBuf  string
-	customAllInput  string
-	customAllOutput string
-	customDisplay   string
-	customCursorOn  bool
-	customBlinkID   int
+	viewIsSample      bool
+	showSampleDetails bool
+	lastSampleResults []TestResult
 }
 
 type toastTimeoutMsg struct{ id int }
-type customOutputMsg string
-type customDoneMsg struct{}
-type cursorBlinkMsg struct{ id int }
-type compileDoneMsg struct {
-	id      int
-	target  compileTarget
-	exePath string
-	cleanup func()
-	err     error
+type runDoneMsg struct {
+	id            int
+	output        string
+	sampleResults []TestResult
 }
 
-func NewModel(problems []Problem) model {
-	return model{problems: problems}
-}
-
-func (m model) Init() tea.Cmd {
-	return nil
-}
+func NewModel(problems []Problem) model { return model{problems: problems, screen: screenList} }
+func (m model) Init() tea.Cmd           { return nil }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		m.adjustOffset()
+		m.width, m.height = msg.Width, msg.Height
+		m.adjustListOffset()
 		m.clampViewLine()
 		return m, nil
-
 	case toastTimeoutMsg:
 		if m.screen == screenToast && msg.id == m.toastID {
-			m.screen = m.toastBack
+			m.screen = m.prevScreen
 		}
 		return m, nil
-
-	case customOutputMsg:
-		if m.screen != screenCustom {
-			return m, nil
+	case runDoneMsg:
+		if msg.id == m.runningJobID && m.screen == screenRunning {
+			if msg.sampleResults != nil {
+				m.lastSampleResults = msg.sampleResults
+				m.viewIsSample = true
+				m.output = formatTestResults(msg.sampleResults, m.showSampleDetails)
+			} else {
+				m.viewIsSample = false
+				m.output = msg.output
+			}
+			m.viewLine, m.screen = 0, screenView
 		}
-		chunk := string(msg)
-		m.customAllOutput += chunk
-		m.customDisplay += chunk
-		return m, waitForOutput(m.customOutputCh)
-
-	case customDoneMsg:
-		if m.screen != screenCustom {
-			return m, nil
-		}
-		m.showCustomResult()
 		return m, nil
-
-	case cursorBlinkMsg:
-		if m.screen != screenCustom || msg.id != m.customBlinkID {
-			return m, nil
-		}
-		m.customCursorOn = !m.customCursorOn
-		return m, blinkCursor(m.customBlinkID)
-
-	case compileDoneMsg:
-		if msg.id != m.compileJobID {
-			if msg.cleanup != nil {
-				msg.cleanup()
-			}
-			return m, nil
-		}
-
-		m.compileCancel = nil
-		if m.screen != screenCompiling {
-			if msg.cleanup != nil {
-				msg.cleanup()
-			}
-			return m, nil
-		}
-
-		if msg.err != nil {
-			m.screen = m.compileBack
-			return m, m.showToast(msg.err.Error(), true, m.compileBack)
-		}
-
-		switch msg.target {
-		case compilePreset:
-			res := RunPresetTestCasesWithExe(m.selected, msg.exePath)
-			if msg.cleanup != nil {
-				msg.cleanup()
-			}
-			if res.Err != nil {
-				m.screen = m.compileBack
-				return m, m.showToast(res.Err.Error(), true, m.compileBack)
-			}
-			m.output = res.Summary
-			m.viewLine = 0
-			m.screen = screenView
-			return m, nil
-		case compileCustom:
-			return m.startCustomWithExe(msg.exePath, msg.cleanup)
-		default:
-			if msg.cleanup != nil {
-				msg.cleanup()
-			}
-			m.screen = m.compileBack
-			return m, m.showToast("unknown compile target", true, m.compileBack)
-		}
-
 	case tea.KeyMsg:
-		key := msg.String()
+		return m.handleKey(msg)
+	}
+	return m, nil
+}
 
-		if m.screen == screenCustom {
-			return m.updateCustom(key)
-		}
+func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+	if key == "ctrl+c" {
+		return m, tea.Quit
+	}
 
-		if key == "ctrl+c" {
-			if m.compileCancel != nil {
-				m.compileCancel()
-				m.compileCancel = nil
-			}
-			return m, tea.Quit
+	switch key {
+	case "q", "esc":
+		return m.handleBack(key == "q")
+	case "up", "k":
+		if m.screen == screenList && m.cursor > 0 {
+			m.cursor--
+			m.adjustListOffset()
+		} else if m.screen == screenAction && m.action > 0 {
+			m.action--
+		} else if m.screen == screenView {
+			m.scrollView(-1)
 		}
-		if key == "q" && m.screen == screenMain {
-			return m, tea.Quit
+	case "down", "j":
+		if m.screen == screenList && m.cursor < len(m.problems)-1 {
+			m.cursor++
+			m.adjustListOffset()
+		} else if m.screen == screenAction && m.action < len(actions)-1 {
+			m.action++
+		} else if m.screen == screenView {
+			m.scrollView(1)
 		}
-
-		switch key {
-		case "up", "k":
-			switch m.screen {
-			case screenMain:
-				if m.cursor > 0 {
-					m.cursor--
-				}
-				m.adjustOffset()
-			case screenProblem:
-				if m.optionCursor > 0 {
-					m.optionCursor--
-				}
-			case screenView:
-				m.scrollView(-1)
+	case "pgup", "ctrl+u":
+		if m.screen == screenView {
+			m.scrollView(-m.viewRows())
+		}
+	case "pgdown", "ctrl+d":
+		if m.screen == screenView {
+			m.scrollView(m.viewRows())
+		}
+	case "ctrl+o":
+		if m.screen == screenView && m.viewIsSample {
+			m.showSampleDetails = !m.showSampleDetails
+			m.output = formatTestResults(m.lastSampleResults, m.showSampleDetails)
+			m.clampViewLine()
+		}
+	case "enter":
+		if m.screen == screenCustomInput {
+			m.customIn += "\n"
+			return m, nil
+		}
+		if m.screen == screenList {
+			if len(m.problems) > 0 {
+				m.selected, m.action, m.screen = &m.problems[m.cursor], 0, screenAction
 			}
-		case "down", "j":
-			switch m.screen {
-			case screenMain:
-				if m.cursor < len(m.problems)-1 {
-					m.cursor++
-				}
-				m.adjustOffset()
-			case screenProblem:
-				if m.optionCursor < len(problemOptions)-1 {
-					m.optionCursor++
-				}
-			case screenView:
-				m.scrollView(1)
-			}
-		case "enter":
-			switch m.screen {
-			case screenMain:
-				if len(m.problems) == 0 {
-					return m, nil
-				}
-				m.selected = m.problems[m.cursor]
-				m.optionCursor = 0
-				m.screen = screenProblem
-			case screenProblem:
-				option := problemOptions[m.optionCursor]
-				switch option {
-				case optionOpenCode:
-					codeBytes, err := os.ReadFile(m.selected.CodePath)
-					if err != nil {
-						return m, m.showToast(err.Error(), true, screenProblem)
-					}
-					codeText := string(codeBytes)
-					if strings.TrimSpace(codeText) == "" {
-						return m, m.showToast("Code file is empty", true, screenProblem)
-					}
-					m.output = codeText
-					m.viewLine = 0
-					m.screen = screenView
-				case optionOpenDevlog:
-					devlogBytes, err := os.ReadFile(m.selected.DevlogPath)
-					if err != nil {
-						return m, m.showToast(err.Error(), true, screenProblem)
-					}
-					devlogText := string(devlogBytes)
-					if strings.TrimSpace(devlogText) == "" {
-						return m, m.showToast("Devlog file is empty", true, screenProblem)
-					}
-					m.output = devlogText
-					m.viewLine = 0
-					m.screen = screenView
-				case optionOpenJudge:
-					if m.selected.JudgeLink == "" {
-						return m, m.showToast("judge link not found", true, screenProblem)
-					}
-					if err := OpenInSystem(m.selected.JudgeLink); err != nil {
-						return m, m.showToast(err.Error(), true, screenProblem)
-					}
-				case optionRunPresetTestCase:
-					return m, m.startCompile(compilePreset, screenProblem)
-				case optionRunCustomTestCase:
-					return m, m.startCompile(compileCustom, screenProblem)
-				}
-			}
-		case "esc":
-			switch m.screen {
-			case screenProblem:
-				m.screen = screenMain
-			case screenView:
-				m.screen = screenProblem
-			case screenCompiling:
-				if m.compileCancel != nil {
-					m.compileCancel()
-					m.compileCancel = nil
-				}
-				m.screen = m.compileBack
-			case screenToast:
-				m.screen = m.toastBack
-			}
+			return m, nil
+		}
+		if m.screen == screenAction {
+			return m.selectAction()
+		}
+	case "ctrl+r":
+		if m.screen == screenCustomInput {
+			return m.startRunCustom(m.customIn)
+		}
+	case "backspace":
+		if m.screen == screenCustomInput && len(m.customIn) > 0 {
+			r := []rune(m.customIn)
+			m.customIn = string(r[:len(r)-1])
+		}
+	default:
+		if m.screen == screenCustomInput && len(msg.Runes) > 0 {
+			m.customIn += string(msg.Runes)
 		}
 	}
 	return m, nil
 }
 
-func (m *model) startCompile(target compileTarget, back screen) tea.Cmd {
-	ctx, cancel := context.WithCancel(context.Background())
-	m.compileCancel = cancel
-	m.compileBack = back
-	m.compileJobID++
-	id := m.compileJobID
-	sourcePath := m.selected.CodePath
-	m.screen = screenCompiling
-
-	return func() tea.Msg {
-		exePath, cleanup, err := compileCPPContext(ctx, sourcePath)
-		return compileDoneMsg{id: id, target: target, exePath: exePath, cleanup: cleanup, err: err}
-	}
-}
-
-func (m model) startCustomWithExe(exePath string, cleanup func()) (tea.Model, tea.Cmd) {
-	cmd := exec.Command(exePath)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		cleanup()
-		return m, m.showToast(err.Error(), true, screenProblem)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cleanup()
-		return m, m.showToast(err.Error(), true, screenProblem)
-	}
-	if err := cmd.Start(); err != nil {
-		cleanup()
-		return m, m.showToast(err.Error(), true, screenProblem)
-	}
-
-	ch := make(chan string, 64)
-	go func() {
-		buf := make([]byte, 1024)
-		for {
-			n, readErr := stdout.Read(buf)
-			if n > 0 {
-				ch <- string(buf[:n])
-			}
-			if readErr != nil {
-				close(ch)
-				return
-			}
+func (m model) handleBack(qPressed bool) (tea.Model, tea.Cmd) {
+	switch m.screen {
+	case screenList:
+		if qPressed {
+			return m, tea.Quit
 		}
-	}()
-
-	m.customCmd = cmd
-	m.customStdin = stdin
-	m.customOutputCh = ch
-	m.customCleanup = cleanup
-	m.customInputBuf = ""
-	m.customAllInput = ""
-	m.customAllOutput = ""
-	m.customDisplay = ""
-	m.customCursorOn = true
-	m.customBlinkID++
-	m.screen = screenCustom
-	return m, tea.Batch(waitForOutput(ch), blinkCursor(m.customBlinkID))
+	case screenAction:
+		m.screen = screenList
+	case screenView, screenCustomInput:
+		m.screen = screenAction
+	case screenToast, screenRunning:
+		m.screen = m.prevScreen
+	}
+	return m, nil
 }
 
-func (m model) updateCustom(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "ctrl+c", "esc":
-		m.cleanupCustom()
-		m.screen = screenProblem
-		return m, nil
-	case "enter":
-		line := m.customInputBuf + "\n"
-		m.customAllInput += line
-		m.customDisplay += line
-		m.customInputBuf = ""
-		if m.customStdin != nil {
-			_, _ = io.WriteString(m.customStdin, line)
+func (m model) selectAction() (tea.Model, tea.Cmd) {
+	switch m.action {
+	case 0:
+		text, err := readText(m.selected.DevlogPath)
+		if err != nil {
+			return m, m.showToast("Could not read devlog: "+err.Error(), true, screenAction)
 		}
-		return m, nil
-	case "backspace":
-		if len(m.customInputBuf) > 0 {
-			runes := []rune(m.customInputBuf)
-			m.customInputBuf = string(runes[:len(runes)-1])
+		m.output, m.viewLine, m.screen = text, 0, screenView
+		m.viewIsSample = false
+	case 1:
+		text, err := readText(m.selected.CodePath)
+		if err != nil {
+			return m, m.showToast("Could not read code: "+err.Error(), true, screenAction)
 		}
-		return m, nil
-	case "space":
-		m.customInputBuf += " "
-		return m, nil
-	case "tab":
-		m.customInputBuf += "\t"
-		return m, nil
-	default:
-		if len(key) == 1 && key[0] >= 32 && key[0] < 127 {
-			m.customInputBuf += key
+		m.output, m.viewLine, m.screen = text, 0, screenView
+		m.viewIsSample = false
+	case 2:
+		if m.selected.JudgeURL == "" {
+			return m, m.showToast("Judge URL not found", true, screenAction)
 		}
-		return m, nil
-	}
-}
-
-func (m *model) cleanupCustom() {
-	if m.customStdin != nil {
-		_ = m.customStdin.Close()
-	}
-	if m.customCmd != nil && m.customCmd.Process != nil {
-		_ = m.customCmd.Process.Kill()
-		_ = m.customCmd.Wait()
-	}
-	if m.customCleanup != nil {
-		m.customCleanup()
-	}
-	m.customCmd = nil
-	m.customStdin = nil
-	m.customOutputCh = nil
-	m.customCleanup = nil
-	m.customBlinkID++
-}
-
-func (m *model) showCustomResult() {
-	var result strings.Builder
-	result.WriteString("─── Input ───\n")
-	if m.customAllInput == "" {
-		result.WriteString("(no input)\n")
-	} else {
-		result.WriteString(m.customAllInput)
-		if !strings.HasSuffix(m.customAllInput, "\n") {
-			result.WriteString("\n")
+		if err := OpenInSystem(m.selected.JudgeURL); err != nil {
+			return m, m.showToast("Could not open judge: "+err.Error(), true, screenAction)
 		}
+		return m, m.showToast("Opened judge link", false, screenAction)
+	case 3:
+		return m.startRunSamples()
+	case 4:
+		m.customIn, m.screen = "", screenCustomInput
 	}
-	result.WriteString("\n─── Output ───\n")
-	if m.customAllOutput == "" {
-		result.WriteString("(no output)\n")
-	} else {
-		result.WriteString(m.customAllOutput)
-	}
-	m.output = result.String()
-	m.viewLine = 0
-	m.cleanupCustom()
-	m.screen = screenView
-}
-
-func waitForOutput(ch <-chan string) tea.Cmd {
-	return func() tea.Msg {
-		data, ok := <-ch
-		if !ok {
-			return customDoneMsg{}
-		}
-		return customOutputMsg(data)
-	}
-}
-
-func blinkCursor(id int) tea.Cmd {
-	return tea.Tick(530*time.Millisecond, func(time.Time) tea.Msg {
-		return cursorBlinkMsg{id: id}
-	})
-}
-
-func (m *model) showToast(text string, isErr bool, back screen) tea.Cmd {
-	m.toastText = text
-	m.toastIsErr = isErr
-	m.toastBack = back
-	m.screen = screenToast
-	m.toastID++
-	id := m.toastID
-	return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
-		return toastTimeoutMsg{id: id}
-	})
-}
-
-func (m *model) adjustOffset() {
-	visible := m.visibleRows()
-	if visible <= 0 {
-		m.offset = 0
-		return
-	}
-
-	if m.cursor < m.offset {
-		m.offset = m.cursor
-	}
-	if m.cursor >= m.offset+visible {
-		m.offset = m.cursor - visible + 1
-	}
-}
-
-func (m model) visibleRows() int {
-	rows := m.height - 6
-	if rows < 1 {
-		rows = 1
-	}
-	return rows
+	return m, nil
 }
 
 func (m model) View() string {
 	switch m.screen {
-	case screenMain:
-		title := titleStyle.Render("Competitive Programming Problems")
-		var list string
-		if len(m.problems) == 0 {
-			list = errorStyle.Render("No .cpp problems found in ./problems")
-		} else {
-			visible := m.visibleRows()
-			start := m.offset
-			end := start + visible
-			if end > len(m.problems) {
-				end = len(m.problems)
-			}
-
-			lines := make([]string, 0, end-start)
-			for i := start; i < end; i++ {
-				line := m.problems[i].ProblemCode
-				if i == m.cursor {
-					line = cursorStyle.Render("> " + line)
-				} else {
-					line = "  " + line
-				}
-				lines = append(lines, line)
-			}
-			list = strings.Join(lines, "\n")
-		}
-		footer := footerStyle.Render("q: quit · enter: select")
-		return strings.Join([]string{title, list, footer}, "\n")
-
+	case screenList:
+		return m.renderList()
+	case screenAction:
+		return m.renderAction()
+	case screenView:
+		return m.renderView()
 	case screenToast:
 		msg := m.toastText
 		if m.toastIsErr {
 			msg = errorStyle.Render(msg)
 		} else {
-			msg = statusStyle.Render(msg)
+			msg = infoStyle.Render(msg)
 		}
-		footer := footerStyle.Render("esc: go back")
-		return strings.Join([]string{msg, footer}, "\n")
-
-	case screenCompiling:
-		body := statusStyle.Render("Compiling...")
-		footer := footerStyle.Render("esc: cancel and go back")
-		return strings.Join([]string{body, "", footer}, "\n")
-
-	case screenView:
-		var body string
-		if m.output == "" {
-			body = statusStyle.Render("no content loaded")
-		} else {
-			lines := m.viewLines()
-			visible := m.viewVisibleRows()
-			maxStart := len(lines) - visible
-			if maxStart < 0 {
-				maxStart = 0
-			}
-
-			start := m.viewLine
-			if start < 0 {
-				start = 0
-			}
-			if start > maxStart {
-				start = maxStart
-			}
-			end := start + visible
-			if end > len(lines) {
-				end = len(lines)
-			}
-			body = strings.Join(lines[start:end], "\n")
-		}
-		footer := footerStyle.Render("esc: go back · j/k: scroll")
-		return strings.Join([]string{body, "", footer}, "\n")
-
-	case screenProblem:
-		title := titleStyle.Render(m.selected.ProblemCode)
-		lines := make([]string, 0, len(problemOptions))
-		for i, option := range problemOptions {
-			line := option
-			if i == m.optionCursor {
-				line = cursorStyle.Render("> " + line)
-			} else {
-				line = "  " + line
-			}
-			lines = append(lines, line)
-		}
-		list := strings.Join(lines, "\n")
-		footer := footerStyle.Render("esc: go back · enter: select")
-		return strings.Join([]string{title, list, footer}, "\n")
-
-	case screenCustom:
-		viewLines := m.customViewLines()
-		visible := m.height - 2
-		if visible < 1 {
-			visible = 1
-		}
-		start := len(viewLines) - visible
-		if start < 0 {
-			start = 0
-		}
-		end := start + visible
-		if end > len(viewLines) {
-			end = len(viewLines)
-		}
-		body := strings.Join(viewLines[start:end], "\n")
-		footer := footerStyle.Render("esc: quit program")
-		return body + "\n" + footer
-
+		return msg + "\n\n" + footerStyle.Render("esc/q: dismiss")
+	case screenCustomInput:
+		return m.renderCustomInput()
+	case screenRunning:
+		return titleStyle.Render(m.selected.Name) + "\n\n" + infoStyle.Render("Running...") + "\n\n" + footerStyle.Render("esc/q: back")
 	default:
 		return ""
 	}
 }
 
-func (m model) customViewLines() []string {
-	cursor := "█"
-	if !m.customCursorOn {
-		cursor = " "
+func (m model) renderList() string {
+	if len(m.problems) == 0 {
+		return titleStyle.Render("Competitive Programming Problems") + "\n\n" + errorStyle.Render("No problems found") + "\n\n" + footerStyle.Render("q: quit")
 	}
-	full := m.customDisplay + m.customInputBuf + cursor
-
-	clean := strings.ReplaceAll(full, "\r\n", "\n")
-	clean = strings.ReplaceAll(clean, "\r", "\n")
-	rawLines := strings.Split(clean, "\n")
-
-	wrapWidth := m.width
-	if wrapWidth < 1 {
-		wrapWidth = 1
+	visible, start := m.listRows(), m.listOffset
+	end := min(start+visible, len(m.problems))
+	lines := make([]string, 0, end-start)
+	for i := start; i < end; i++ {
+		line := "  " + m.problems[i].Name
+		if i == m.cursor {
+			line = cursorStyle.Render("> " + m.problems[i].Name)
+		}
+		lines = append(lines, line)
 	}
+	return titleStyle.Render("Competitive Programming Problems") + "\n\n" + strings.Join(lines, "\n") + "\n\n" + footerStyle.Render("enter: select | q: quit")
+}
 
-	lines := make([]string, 0, len(rawLines))
-	for _, line := range rawLines {
-		lines = append(lines, wrapLine(line, wrapWidth)...)
+func (m model) renderAction() string {
+	lines := make([]string, 0, len(actions))
+	for i, action := range actions {
+		line := "  " + action
+		if i == m.action {
+			line = cursorStyle.Render("> " + action)
+		}
+		lines = append(lines, line)
+	}
+	return titleStyle.Render(m.selected.Name) + "\n\n" + strings.Join(lines, "\n") + "\n\n" + footerStyle.Render("enter: select | esc/q: back")
+}
+
+func (m model) renderView() string {
+	lines, visible := m.outputLines(), m.viewRows()
+	start := clamp(m.viewLine, 0, max(0, len(lines)-visible))
+	end := min(start+visible, len(lines))
+	footer := "j/k: scroll | esc/q: back"
+	if m.viewIsSample {
+		footer = "j/k: scroll | ctrl+o: toggle io | esc/q: back"
+	}
+	return titleStyle.Render(m.selected.Name) + "\n\n" + strings.Join(lines[start:end], "\n") + "\n\n" + footerStyle.Render(footer)
+}
+
+func (m model) renderCustomInput() string {
+	width := max(1, m.width-2)
+	lines := []string{}
+	for _, raw := range strings.Split(strings.ReplaceAll(m.customIn+"█", "\r\n", "\n"), "\n") {
+		lines = append(lines, wrapLine(raw, width)...)
 	}
 	if len(lines) == 0 {
-		return []string{""}
+		lines = []string{"█"}
 	}
-	return lines
+	start := max(0, len(lines)-m.viewRows())
+	return titleStyle.Render("Custom Input") + "\n\n" + strings.Join(lines[start:], "\n") + "\n\n" + footerStyle.Render("enter: newline | ctrl+r: run | esc/q: back")
 }
 
-func (m *model) scrollView(delta int) {
-	if m.output == "" {
-		return
-	}
+func (m *model) startRunSamples() (tea.Model, tea.Cmd) {
+	m.runningJobID++
+	id := m.runningJobID
+	m.prevScreen, m.screen = screenAction, screenRunning
+	selected := *m.selected
+	return m, func() tea.Msg { return runDoneMsg{id: id, sampleResults: RunTestCases(selected)} }
+}
 
-	lines := m.viewLines()
-	visible := m.viewVisibleRows()
-	maxStart := len(lines) - visible
-	if maxStart < 0 {
-		maxStart = 0
-	}
-
-	m.viewLine += delta
-	if m.viewLine < 0 {
-		m.viewLine = 0
-	}
-	if m.viewLine > maxStart {
-		m.viewLine = maxStart
+func (m *model) startRunCustom(input string) (tea.Model, tea.Cmd) {
+	m.runningJobID++
+	id := m.runningJobID
+	m.prevScreen, m.screen = screenCustomInput, screenRunning
+	selected := *m.selected
+	return m, func() tea.Msg {
+		out, err := RunCustomInput(selected, input)
+		return runDoneMsg{id: id, output: formatCustomRunOutput(input, out, err)}
 	}
 }
+
+func (m *model) showToast(text string, isErr bool, back int) tea.Cmd {
+	m.toastText, m.toastIsErr, m.prevScreen = text, isErr, back
+	m.toastID++
+	id := m.toastID
+	m.screen = screenToast
+	return tea.Tick(2500*time.Millisecond, func(time.Time) tea.Msg { return toastTimeoutMsg{id: id} })
+}
+
+func (m *model) adjustListOffset() {
+	visible := m.listRows()
+	if m.cursor < m.listOffset {
+		m.listOffset = m.cursor
+	}
+	if m.cursor >= m.listOffset+visible {
+		m.listOffset = m.cursor - visible + 1
+	}
+	if m.listOffset < 0 {
+		m.listOffset = 0
+	}
+}
+
+func (m *model) scrollView(delta int) { m.viewLine += delta; m.clampViewLine() }
 
 func (m *model) clampViewLine() {
-	if m.output == "" {
-		m.viewLine = 0
-		return
-	}
-
-	lines := m.viewLines()
-	visible := m.viewVisibleRows()
-	maxStart := len(lines) - visible
-	if maxStart < 0 {
-		maxStart = 0
-	}
-
-	if m.viewLine < 0 {
-		m.viewLine = 0
-	}
-	if m.viewLine > maxStart {
-		m.viewLine = maxStart
-	}
+	maxStart := max(0, len(m.outputLines())-m.viewRows())
+	m.viewLine = clamp(m.viewLine, 0, maxStart)
 }
 
-func (m model) viewLines() []string {
-	cleanOutput := strings.ReplaceAll(m.output, "\r\n", "\n")
-	cleanOutput = strings.ReplaceAll(cleanOutput, "\r", "\n")
-	rawLines := strings.Split(cleanOutput, "\n")
-	wrapWidth := m.width
-	if wrapWidth < 1 {
-		wrapWidth = 1
-	}
+func (m model) listRows() int { return m.visibleRows() }
+func (m model) viewRows() int { return m.visibleRows() }
 
-	lines := make([]string, 0, len(rawLines))
-	for _, line := range rawLines {
-		lines = append(lines, wrapLine(line, wrapWidth)...)
+func (m model) visibleRows() int {
+	if m.height <= 0 {
+		return 18
+	}
+	return max(1, m.height-6)
+}
+
+func (m model) outputLines() []string {
+	if strings.TrimSpace(m.output) == "" {
+		return []string{"(empty output)"}
+	}
+	width := max(1, m.width-2)
+	text := strings.ReplaceAll(strings.ReplaceAll(m.output, "\r\n", "\n"), "\r", "\n")
+	raw, lines := strings.Split(text, "\n"), make([]string, 0)
+	for _, line := range raw {
+		lines = append(lines, wrapLine(line, width)...)
 	}
 	if len(lines) == 0 {
 		return []string{""}
@@ -689,73 +359,154 @@ func (m model) viewLines() []string {
 	return lines
 }
 
-func (m model) viewVisibleRows() int {
-	rows := m.height - 2
-	if rows < 1 {
-		rows = 1
-	}
-	return rows
-}
-
-func wrapLine(line string, width int) []string {
+func wrapLine(s string, width int) []string {
 	if width < 1 {
 		width = 1
 	}
-	if line == "" {
+	r := []rune(s)
+	if len(r) == 0 {
 		return []string{""}
 	}
+	out := make([]string, 0, (len(r)/width)+1)
+	for len(r) > width {
+		out, r = append(out, string(r[:width])), r[width:]
+	}
+	return append(out, string(r))
+}
 
-	runes := []rune(line)
-	out := make([]string, 0, (len(runes)/width)+1)
-	start := 0
-	for start < len(runes) {
-		col := 0
-		end := start
-		lastSpace := -1
-		for end < len(runes) {
-			rw := runewidth.RuneWidth(runes[end])
-			if rw <= 0 {
-				rw = 1
-			}
-			if col+rw > width {
-				break
-			}
-			col += rw
-			if unicode.IsSpace(runes[end]) {
-				lastSpace = end
-			}
-			end++
-		}
+func readText(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("file path is empty")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	text := string(data)
+	if strings.TrimSpace(text) == "" {
+		return "", fmt.Errorf("file is empty")
+	}
+	return text, nil
+}
 
-		if end == len(runes) {
-			out = append(out, string(runes[start:end]))
-			break
-		}
-
-		if lastSpace >= start {
-			segment := strings.TrimRightFunc(string(runes[start:lastSpace]), unicode.IsSpace)
-			out = append(out, segment)
-			start = lastSpace + 1
-			for start < len(runes) && unicode.IsSpace(runes[start]) {
-				start++
+func formatTestResults(results []TestResult, showDetails bool) string {
+	var b strings.Builder
+	passed := 0
+	for _, r := range results {
+		if r.Passed {
+			passed++
+			b.WriteString(passStyle.Render(fmt.Sprintf("✓ %s", r.InputFile)) + "\n")
+			if showDetails {
+				appendLabeledBlock(&b, "input", r.Input)
+				appendLabeledBlock(&b, "got", r.Got)
 			}
 			continue
 		}
-
-		out = append(out, string(runes[start:end]))
-		start = end
+		b.WriteString(errorStyle.Render(fmt.Sprintf("✗ %s", r.InputFile)) + "\n")
+		if showDetails {
+			appendLabeledBlock(&b, "input", r.Input)
+			if r.Expected != "" {
+				appendLabeledBlock(&b, "expected", r.Expected)
+			}
+			gotText := r.Got
+			if r.InputFile == "compile" && strings.Contains(gotText, bitsCompilerHint) {
+				gotText = strings.TrimSpace(strings.TrimSuffix(gotText, bitsCompilerHint))
+			}
+			appendLabeledBlock(&b, "got", gotText)
+			if r.InputFile == "compile" && strings.Contains(r.Got, bitsCompilerHint) {
+				b.WriteString("    " + infoStyle.Render(bitsCompilerHint) + "\n")
+			}
+		} else {
+			if r.Expected != "" {
+				b.WriteString(fmt.Sprintf("  expected: %s\n", oneLine(r.Expected)))
+			}
+			b.WriteString(fmt.Sprintf("  got:      %s\n", oneLine(r.Got)))
+		}
 	}
+	b.WriteString(fmt.Sprintf("\nPassed %d/%d\n", passed, len(results)))
+	return b.String()
+}
 
-	if len(out) == 0 {
-		return []string{""}
+func appendLabeledBlock(b *strings.Builder, label, text string) {
+	b.WriteString("  " + label + ":\n")
+	if strings.TrimSpace(text) == "" {
+		b.WriteString("    (empty)\n")
+		return
 	}
-	return out
+	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+		if strings.TrimSpace(line) == "" {
+			b.WriteString("    \n")
+		} else {
+			b.WriteString("    " + line + "\n")
+		}
+	}
+}
+
+func formatCustomRunOutput(input, out string, err error) string {
+	var b strings.Builder
+	b.WriteString("Input:\n")
+	if strings.TrimSpace(input) == "" {
+		b.WriteString("(empty)\n")
+	} else {
+		b.WriteString(input)
+		if !strings.HasSuffix(input, "\n") {
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("\nOutput:\n")
+	if err != nil {
+		errText := err.Error()
+		if strings.Contains(errText, bitsCompilerHint) {
+			errText = strings.ReplaceAll(errText, bitsCompilerHint, infoStyle.Render(bitsCompilerHint))
+		}
+		b.WriteString(errText)
+	} else if out == "" {
+		b.WriteString("(empty)")
+	} else {
+		b.WriteString(out)
+	}
+	return b.String()
+}
+
+func oneLine(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	first := strings.TrimSpace(strings.Split(s, "\n")[0])
+	if strings.Contains(s, "\n") {
+		return first + " ..."
+	}
+	return first
 }
 
 var (
-	titleStyle  = lipgloss.NewStyle().Bold(true)
-	cursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
-	errorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
-	statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
-	footerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	cursorStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
+	passStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
+	infoStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("45"))
+	errorStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
+	footerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 )
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+func clamp(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}

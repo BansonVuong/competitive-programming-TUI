@@ -42,6 +42,28 @@ changelog:
       - "^docs:"
       - "^test:"
 
+brews:
+  - repository:
+      owner: BansonVuong
+      name: homebrew-tap
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/BansonVuong/competitive-programming-TUI
+    description: Terminal UI for testing competitive programming solutions.
+    dependencies:
+      - name: gcc
+
+scoops:
+  - repository:
+      owner: BansonVuong
+      name: scoop-bucket
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/BansonVuong/competitive-programming-TUI
+    description: Terminal UI for testing competitive programming solutions.
+    license: MIT
+    dependencies:
+      - gcc
+
 release:
   github:
     owner: BansonVuong

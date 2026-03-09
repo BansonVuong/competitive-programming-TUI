@@ -16,9 +16,14 @@ This can be a good way to systematically judge competitive programming solutions
 
 Download and unzip a release archive from GitHub Releases.
 
+Package managers (when configured):
+
+- Homebrew: `brew tap BansonVuong/homebrew-tap && brew install cptui`
+- Scoop (Windows): `scoop bucket add bansonvuong https://github.com/BansonVuong/scoop-bucket && scoop install cptui`
+
 ## Run
 
-Run from a directory that contains `./problems`.
+Run from a directory that contains `./problems`, or specify `--problems-dir`.
 
 ### macOS
 
@@ -70,3 +75,7 @@ git push origin v0.1.0
 - run tests
 - build multi-platform binaries
 - publish release archives
+- update Homebrew formula in `BansonVuong/homebrew-tap`
+- update Scoop manifest in `BansonVuong/scoop-bucket`
+
+4. Add repo secret `TAP_GITHUB_TOKEN` with push access to both tap/bucket repos.

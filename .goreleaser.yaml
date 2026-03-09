@@ -61,8 +61,6 @@ scoops:
     homepage: https://github.com/BansonVuong/competitive-programming-TUI
     description: Terminal UI for testing competitive programming solutions.
     license: MIT
-    dependencies:
-      - gcc
 
 release:
   github:

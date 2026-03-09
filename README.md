@@ -75,6 +75,8 @@ The only file that is guaranteed to work without `<bits/stdc++.h>` support is `b
 
 Install using brew or scoop, then it will prompt you to download the sample problems folder in your current folder.
 
+To run init again, simply run `cptui --init`
+
 ## Maintainer: Publish a New Version
 
 1. Commit and push to `main`.

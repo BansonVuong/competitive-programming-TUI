@@ -14,7 +14,29 @@ This can be a good way to systematically judge competitive programming solutions
 
 ## Install
 
-Download and unzip the folder and run the binary. 
+Download and unzip the folder and run the binary in your terminal. 
+
+## Run
+
+After unzipping a release:
+
+### macOS
+
+```bash
+./cptui
+```
+
+### Linux
+
+```bash
+./cptui
+```
+
+### Windows (PowerShell)
+
+```powershell
+.\cptui.exe
+```
 
 **A C++ compiler is required to run this program.**
 

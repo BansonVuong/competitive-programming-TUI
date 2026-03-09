@@ -8,9 +8,10 @@ import (
 )
 
 func main() {
-	problems, err := DiscoverProblems("./problems")
+	problemsDir := "./problems"
+	problems, err := DiscoverProblems(problemsDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to discover problems: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to discover problems in %q: %v\n", problemsDir, err)
 		os.Exit(1)
 	}
 

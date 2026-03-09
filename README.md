@@ -14,11 +14,11 @@ This can be a good way to systematically judge competitive programming solutions
 
 ## Install
 
-Download and unzip the folder and run the binary in your terminal. 
+Download and unzip a release archive from GitHub Releases.
 
 ## Run
 
-After unzipping a release:
+Run from a directory that contains `./problems`.
 
 ### macOS
 
@@ -49,3 +49,18 @@ Use a **GCC/g++** toolchain (needed for `bits/stdc++.h`):
 # Demo
 
 The only file that is guaranteed to work without `<bits/stdc++.h>` support is `bf1easy`. Otherwise, you may need to install a compiler with support for `<bits/stdc++.h>`.
+
+## Maintainer: Publish a New Version
+
+1. Commit and push to `main`.
+2. Create and push a semver tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+3. GitHub Actions workflow `.github/workflows/release.yml` will:
+- run tests
+- build multi-platform binaries
+- publish release archives

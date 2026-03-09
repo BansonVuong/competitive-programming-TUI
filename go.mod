@@ -1,4 +1,4 @@
-module cp
+module github.com/BansonVuong/competitive-programming-TUI
 
 go 1.23
 
